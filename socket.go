@@ -1,5 +1,3 @@
-// +build !debug
-
 package bifrost
 
 import (
@@ -52,6 +50,7 @@ func NewSocket(ip string, remote string, port int, bufSize int, pIdentifier []by
 	}
 
 	listenConn, err := net.ListenUDP("udp", listenAddr)
+	listenConn.SetReadBuffer(1048576)
 
 	if err != nil {
 		log.Fatalf("Error trying to listen on socket: %s", err)
@@ -84,25 +83,29 @@ func NewSocket(ip string, remote string, port int, bufSize int, pIdentifier []by
 }
 
 func (s *Socket) listen(wg *sync.WaitGroup) {
+
 	defer wg.Done()
-	log.Printf("Starting to listen for packets on %s", s.listenAddr)
-
+	//log.Printf("Starting to listen for packets on %s", s.listenAddr)
+	buf := make([]byte, s.bufSize)
 	for {
-		buf := make([]byte, s.bufSize)
-		n, addr, err := s.listenConn.ReadFromUDP(buf)
-		//log.Printf("RECV: Processing new packet")
-		newPacket := NewPacket(addr, buf)
-		newPacket.sender = addr
+		//listenCycleCount++
 
+		n, addr, err := s.listenConn.ReadFromUDP(buf)
+
+		//log.Printf("RECV: Processing new packet")
+		newPacket := NewPacket(addr, nil)
+		newPacket.sender = addr
+		//log.Printf("RECV: Received packet from: %s", addr)
 		// Extract the various fields from the data received
-		newPacket.protocolID = buf[0:4]
-		newPacket.sequence = buf[4:8]
-		if newPacket.SequenceInt() == 10 {
-			continue
-		}
-		newPacket.ack = buf[8:12]
+		copy(newPacket.protocolID, buf[0:4])
+		//newPacket.protocolID = buf[0:4]
+		copy(newPacket.sequence, buf[4:8])
+		//newPacket.sequence = buf[4:8]
+		copy(newPacket.ack, buf[8:12])
+		//newPacket.ack = buf[8:12]
 		newPacket.acks = bitfield.BitField(buf[12:16])
-		newPacket.payload = buf[16:n]
+		copy(newPacket.payload, buf[16:n])
+		//newPacket.payload = buf[16:n]
 		findResult := s.cm.find(addr)
 		if findResult == nil {
 			newConn := newConnection(addr, s)
@@ -114,7 +117,7 @@ func (s *Socket) listen(wg *sync.WaitGroup) {
 		findResult.addReceived(newPacket)
 		findResult.processAck(newPacket.ack)
 		findResult.processAcks(&newPacket.acks, newPacket.sequence)
-		log.Printf("Acks for packet %d are: %s", newPacket.SequenceInt(), newPacket.PrintAcks())
+		//log.Printf("RECV: Ack/s for packet %d are: %d : %s", newPacket.SequenceInt(), newPacket.AckInt(), newPacket.PrintAcks())
 
 		newPacket.c = findResult
 		//log.Printf("packet seq is %d and remote sequence is %d", newPacket.SequenceInt(), findResult.RemoteSequenceInt())
@@ -123,31 +126,48 @@ func (s *Socket) listen(wg *sync.WaitGroup) {
 
 		if seq1 > seq2 {
 			//log.Printf("Incrementing remote sequence")
-			findResult.remoteSequence = newPacket.sequence
+			newPacket.sequenceLock.Lock()
+			findResult.remoteSequenceLock.Lock()
+			copy(findResult.remoteSequence, newPacket.sequence)
+			newPacket.sequenceLock.Unlock()
+			findResult.remoteSequenceLock.Unlock()
 		}
 
 		s.Inbound <- newPacket
 
 		if err != nil {
-			continue
+			log.Printf("Listen socket error: %s", err.Error())
 		}
+
 	}
 }
 
 func (s *Socket) send(wg *sync.WaitGroup) {
 	defer wg.Done()
 	for p := range s.Outbound {
-		//log.Printf("SEND: New packet")
+		//sendStart := time.Now()
+		//log.Printf("SEND: Sending packet to: %s", p.Sender())
 		c := s.cm.find(p.Sender())
-		if c != nil {
-			copy(p.sequence, c.localSequence)
-			c.incrementLocalSequence()
-			copy(p.ack, c.remoteSequence)
-			p.acks = c.composeAcks()
-			//log.Printf("New packet has seq %d", p.SequenceInt())
-			c.addUnacked(p)
-			c.updateLastSent()
+		if c == nil {
+			newConn := newConnection(p.sender, s)
+			s.cm.add(newConn)
+			c = newConn
 		}
+
+		p.sequenceLock.Lock()
+		copy(p.sequence, c.localSequence)
+		p.sequenceLock.Unlock()
+		c.incrementLocalSequence()
+		c.remoteSequenceLock.Lock()
+
+		copy(p.ack, c.remoteSequence)
+		c.remoteSequenceLock.Unlock()
+		c.addUnacked(p)
+		p.acks = c.composeAcks()
+		//log.Printf("New packet has seq %d", p.SequenceInt())
+
+		c.updateLastSent()
+
 		//log.Printf("SEND: New packet seq is %d %p", p.SequenceInt(), p.sequence)
 		var data []byte
 		data = append(data, p.protocolID...)
@@ -160,11 +180,17 @@ func (s *Socket) send(wg *sync.WaitGroup) {
 		//	log.Printf("Throwing away packet: %d", p.SequenceInt())
 		//	continue
 		//}
+		//log.Printf("Sending to %s", p.Sender())
+		//if math.Mod(float64(p.SequenceInt()), 100) == 0 {
+		log.Printf("SEND: Ack/s for packet %d are %d : %s", p.SequenceInt(), p.AckInt(), p.PrintAcks())
+		//}
+
 		_, err := s.listenConn.WriteToUDP(data, p.Sender())
 		if err != nil {
 			log.Printf("Error writing packet: %s", err)
 			continue
 		}
+		//log.Printf("Time for send was: %s", time.Since(sendStart))
 	}
 }
 

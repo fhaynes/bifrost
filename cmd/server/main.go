@@ -57,7 +57,7 @@ func sendEcho(a *net.UDPAddr) *bifrost.Packet {
 func processSocketEvents(s *bifrost.Socket) {
 	log.Printf("Beginning processing of Socket events")
 	for {
-		e := <-s.Events
-		log.Printf("Received %s socket event", e.PrintEventMessage())
+		_ = <-s.Events
+		//log.Printf("Received %s socket event", e.PrintEventMessage())
 	}
 }

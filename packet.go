@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"net"
+	"sync"
 
 	"github.com/emef/bitfield"
 )
@@ -11,13 +12,14 @@ import (
 // Packet is a struct representing headers and data we want to send over the
 // network
 type Packet struct {
-	sender     *net.UDPAddr
-	protocolID []byte
-	sequence   []byte
-	ack        []byte
-	acks       bitfield.BitField
-	payload    []byte
-	c          *connection
+	sender       *net.UDPAddr
+	protocolID   []byte
+	sequence     []byte
+	sequenceLock *sync.Mutex
+	ack          []byte
+	acks         bitfield.BitField
+	payload      []byte
+	c            *connection
 }
 
 // NewPacket initializes a new packet
@@ -29,6 +31,7 @@ func NewPacket(s *net.UDPAddr, p []byte) *Packet {
 	newPacket.acks = bitfield.New(32)
 	newPacket.sender = s
 	newPacket.payload = p
+	newPacket.sequenceLock = &sync.Mutex{}
 	return &newPacket
 }
 
@@ -38,14 +41,20 @@ func (p *Packet) Sender() *net.UDPAddr {
 }
 
 func (p *Packet) Sequence() []byte {
+	p.sequenceLock.Lock()
+	defer p.sequenceLock.Unlock()
 	return p.sequence
 }
 
 func (p *Packet) SetSequence(s uint32) {
+	p.sequenceLock.Lock()
+	defer p.sequenceLock.Unlock()
 	binary.LittleEndian.PutUint32(p.sequence, s)
 }
 
 func (p *Packet) SequenceInt() uint32 {
+	p.sequenceLock.Lock()
+	defer p.sequenceLock.Unlock()
 	return binary.LittleEndian.Uint32(p.sequence)
 }
 
