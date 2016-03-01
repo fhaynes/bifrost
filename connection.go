@@ -2,7 +2,6 @@
 package bifrost
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"log"
@@ -15,37 +14,50 @@ import (
 
 // Connection tracks an individual IP:Port combination
 type connection struct {
-	addr               *net.UDPAddr
-	lastHeard          time.Time
-	lastHeardLock      *sync.Mutex
-	localSequence      []byte
-	remoteSequence     []byte
-	remoteSequenceLock *sync.Mutex
-	unackedPackets     []*unackedPacketWrapper
-	unackedPacketsLock *sync.Mutex
-	receivedQueue      []*Packet
-	receivedQueueLock  *sync.Mutex
-	lastSent           time.Time
+	rtt    float64
+	rttMax float64
+	maxSeq uint32
+	addr   *net.UDPAddr
+
+	lastHeard      time.Time
+	lastAckProcess time.Time
+	lastSent       time.Time
+
+	localSequence  []byte
+	remoteSequence []byte
+
+	unackedPackets []*unackedPacketWrapper
+	ackedPackets   []*Packet
+	receivedQueue  []*Packet
+
 	lastSentLock       *sync.Mutex
-	socket             *Socket
-	lastAckProcess     time.Time
+	receivedQueueLock  *sync.Mutex
+	lastHeardLock      *sync.Mutex
+	unackedPacketsLock *sync.Mutex
+	remoteSequenceLock *sync.Mutex
+	ackedPacketsLock   *sync.Mutex
+
+	socket *Socket
 }
 
 // NewConnection creates a new Connection
 func newConnection(a *net.UDPAddr, s *Socket) *connection {
 	nc := connection{}
 	nc.addr = a
+	nc.rtt = 0.0
+	nc.rttMax = 1.0
 	nc.lastHeard = time.Now()
 	nc.lastHeardLock = &sync.Mutex{}
 	nc.localSequence = make([]byte, 4)
 	nc.remoteSequence = make([]byte, 4)
-
+	nc.maxSeq = 4294967295
 	nc.unackedPackets = make([]*unackedPacketWrapper, 0, 100)
 	nc.unackedPacketsLock = &sync.Mutex{}
 	nc.receivedQueue = make([]*Packet, 33, 33)
 	nc.receivedQueueLock = &sync.Mutex{}
 	nc.lastSentLock = &sync.Mutex{}
 	nc.remoteSequenceLock = &sync.Mutex{}
+	nc.ackedPacketsLock = &sync.Mutex{}
 	nc.socket = s
 	binary.LittleEndian.PutUint32(nc.localSequence, 0)
 	binary.LittleEndian.PutUint32(nc.remoteSequence, 0)
@@ -150,8 +162,14 @@ func (c *connection) delUnacked(seq uint32) bool {
 	return false
 }
 
-func (c *connection) addReceived(p *Packet) {
+func (c *connection) addAcked(p *Packet) {
+	c.ackedPacketsLock.Lock()
+	defer c.ackedPacketsLock.Unlock()
+	c.ackedPackets = append(c.ackedPackets, p)
+	return
+}
 
+func (c *connection) addReceived(p *Packet) {
 	c.receivedQueueLock.Lock()
 	defer c.receivedQueueLock.Unlock()
 	rCount := len(c.receivedQueue)
@@ -173,50 +191,57 @@ func (c *connection) delReceived(p *Packet) bool {
 	return false
 }
 
-func (c *connection) processAck(seq []byte) {
-
-	pSeq := binary.LittleEndian.Uint32(seq)
-	//log.Printf("RECV: Processing ack %d", pSeq)
-	res, _ := c.CheckSeqInUnacked(pSeq)
-	if res == true {
-		c.delUnacked(pSeq)
-	} else {
-
+func (c *connection) processAck(bAck []byte, a *bitfield.BitField) {
+	ack := binary.LittleEndian.Uint32(bAck)
+	c.unackedPacketsLock.Lock()
+	defer c.unackedPacketsLock.Unlock()
+	if len(c.unackedPackets) == 0 {
+		return
+	}
+	for _, eachPacket := range c.unackedPackets {
+		acked := false
+		if eachPacket.p.SequenceInt() == ack {
+			acked = true
+		} else if !c.sequenceMoreRecent(eachPacket.p.SequenceInt(), ack, c.maxSeq) {
+			bitIndex := c.bitIndexForSequence(eachPacket.p.SequenceInt(), ack, c.maxSeq)
+			if bitIndex <= 31 {
+				acked = a.Test(uint32(bitIndex))
+			}
+		}
+		if acked == true {
+			c.addAcked(eachPacket.p)
+			c.delUnacked(eachPacket.p.SequenceInt())
+		}
 	}
 }
 
-func (c *connection) processAcks(a *bitfield.BitField, seq []byte) {
-	count := binary.LittleEndian.Uint32(seq)
-	var i uint32
-	for i = 1; i < 32; i++ {
-		seqCheck := count - i
-		if a.Test(i - 1) {
-			c.delUnacked(seqCheck)
-		}
+func (c *connection) sequenceMoreRecent(seq1 uint32, seq2 uint32, maxSeq uint32) bool {
+	return (seq1 > seq2) && (seq1-seq2 <= maxSeq/2) || (seq2 > seq1) && (seq2-seq1 > maxSeq/2)
+}
+
+func (c *connection) bitIndexForSequence(seq uint32, ack uint32, maxSeq uint32) int {
+	if seq > ack {
+		return int(ack + (maxSeq - seq))
 	}
-	c.lastAckProcess = time.Now()
+	return int(ack - 1 - seq)
 }
 
 func (c *connection) composeAcks() bitfield.BitField {
-	var buf bytes.Buffer
 	acks := bitfield.New(32)
 	c.remoteSequenceLock.Lock()
-	count := binary.LittleEndian.Uint32(c.remoteSequence)
+	ack := binary.LittleEndian.Uint32(c.remoteSequence)
 	c.remoteSequenceLock.Unlock()
-	var i uint32
-	for i = 0; i <= 32; i++ {
-		seqCheck := count - i
-		if seqCheck == 0 {
-			return acks
+	c.receivedQueueLock.Lock()
+	for _, eachPacket := range c.receivedQueue {
+		if eachPacket.SequenceInt() == ack || c.sequenceMoreRecent(eachPacket.SequenceInt(), ack, c.maxSeq) {
+			break
 		}
-		if c.CheckSeqInReceived(seqCheck) == true {
-			buf.WriteString(fmt.Sprintf("%d ", seqCheck))
-			log.Printf("%d %d", seqCheck, i-1)
-			acks.Set(i - 1)
+		bitIndex := c.bitIndexForSequence(eachPacket.SequenceInt(), ack, c.maxSeq)
+		if bitIndex <= 31 {
+			acks.Set(uint32(bitIndex))
 		}
-
 	}
-	log.Printf("%s", &buf)
+	c.receivedQueueLock.Unlock()
 	return acks
 }
 

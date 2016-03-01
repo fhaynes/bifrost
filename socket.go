@@ -115,23 +115,17 @@ func (s *Socket) listen(wg *sync.WaitGroup) {
 			findResult.updateLastHeard()
 		}
 		findResult.addReceived(newPacket)
-		findResult.processAck(newPacket.ack)
-		findResult.processAcks(&newPacket.acks, newPacket.sequence)
+		if findResult.sequenceMoreRecent(binary.LittleEndian.Uint32(newPacket.sequence),
+			binary.LittleEndian.Uint32(findResult.remoteSequence),
+			findResult.maxSeq) {
+			copy(findResult.remoteSequence, newPacket.sequence)
+
+		}
+		findResult.processAck(newPacket.ack, &newPacket.acks)
 		//log.Printf("RECV: Ack/s for packet %d are: %d : %s", newPacket.SequenceInt(), newPacket.AckInt(), newPacket.PrintAcks())
 
 		newPacket.c = findResult
 		//log.Printf("packet seq is %d and remote sequence is %d", newPacket.SequenceInt(), findResult.RemoteSequenceInt())
-		seq1 := binary.LittleEndian.Uint32(newPacket.sequence)
-		seq2 := binary.LittleEndian.Uint32(findResult.remoteSequence)
-
-		if seq1 > seq2 {
-			//log.Printf("Incrementing remote sequence")
-			newPacket.sequenceLock.Lock()
-			findResult.remoteSequenceLock.Lock()
-			copy(findResult.remoteSequence, newPacket.sequence)
-			newPacket.sequenceLock.Unlock()
-			findResult.remoteSequenceLock.Unlock()
-		}
 
 		s.Inbound <- newPacket
 
