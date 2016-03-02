@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ type Socket struct {
 	pIdentifier []byte
 	wg          *sync.WaitGroup
 	cm          *connectionManager
+	packetloss  int
 }
 
 // NewSocket creates and returns a new Socket
@@ -75,6 +77,7 @@ func NewSocket(ip string, remote string, port int, bufSize int, pIdentifier []by
 	newSocket.Events = make(chan *Event, 1024)
 	newSocket.pIdentifier = pIdentifier
 	newSocket.cm = newConnectionManager(&newSocket)
+	newSocket.packetloss = 50
 	timeoutString := fmt.Sprintf("%ds", timeOut)
 	timeout, err := time.ParseDuration(timeoutString)
 	newSocket.timeout = timeout
@@ -122,7 +125,7 @@ func (s *Socket) listen(wg *sync.WaitGroup) {
 
 		}
 		findResult.processAck(newPacket.ack, &newPacket.acks)
-		//log.Printf("RECV: Ack/s for packet %d are: %d : %s", newPacket.SequenceInt(), newPacket.AckInt(), newPacket.PrintAcks())
+		log.Printf("RECV: Ack/s for packet %d are: %d : %s", newPacket.SequenceInt(), newPacket.AckInt(), newPacket.PrintAcks())
 
 		newPacket.c = findResult
 		//log.Printf("packet seq is %d and remote sequence is %d", newPacket.SequenceInt(), findResult.RemoteSequenceInt())
@@ -139,6 +142,7 @@ func (s *Socket) listen(wg *sync.WaitGroup) {
 func (s *Socket) send(wg *sync.WaitGroup) {
 	defer wg.Done()
 	for p := range s.Outbound {
+
 		//sendStart := time.Now()
 		//log.Printf("SEND: Sending packet to: %s", p.Sender())
 		c := s.cm.find(p.Sender())
@@ -152,12 +156,18 @@ func (s *Socket) send(wg *sync.WaitGroup) {
 		copy(p.sequence, c.localSequence)
 		p.sequenceLock.Unlock()
 		c.incrementLocalSequence()
-		c.remoteSequenceLock.Lock()
 
+		c.remoteSequenceLock.Lock()
 		copy(p.ack, c.remoteSequence)
 		c.remoteSequenceLock.Unlock()
+
 		c.addUnacked(p)
+
 		p.acks = c.composeAcks()
+
+		if c.LocalSequenceInt() > c.maxSeq {
+			c.SetLocalSequence(uint32(0))
+		}
 		//log.Printf("New packet has seq %d", p.SequenceInt())
 
 		c.updateLastSent()
@@ -178,7 +188,13 @@ func (s *Socket) send(wg *sync.WaitGroup) {
 		//if math.Mod(float64(p.SequenceInt()), 100) == 0 {
 		log.Printf("SEND: Ack/s for packet %d are %d : %s", p.SequenceInt(), p.AckInt(), p.PrintAcks())
 		//}
-
+		if s.packetloss > 0 {
+			randChance := rand.Int31n(100)
+			if randChance <= int32(s.packetloss) {
+				log.Printf("Throwing away a packet")
+				continue
+			}
+		}
 		_, err := s.listenConn.WriteToUDP(data, p.Sender())
 		if err != nil {
 			log.Printf("Error writing packet: %s", err)

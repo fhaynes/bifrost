@@ -143,9 +143,12 @@ func (c *connection) key() string {
 
 func (c *connection) addUnacked(p *Packet) {
 	nu := newUPW(p)
+
 	c.unackedPacketsLock.Lock()
+
 	defer c.unackedPacketsLock.Unlock()
 	c.unackedPackets = append(c.unackedPackets, nu)
+	return
 }
 
 func (c *connection) delUnacked(seq uint32) bool {
@@ -210,7 +213,9 @@ func (c *connection) processAck(bAck []byte, a *bitfield.BitField) {
 		}
 		if acked == true {
 			c.addAcked(eachPacket.p)
+			c.unackedPacketsLock.Unlock()
 			c.delUnacked(eachPacket.p.SequenceInt())
+			c.unackedPacketsLock.Lock()
 		}
 	}
 }
@@ -233,6 +238,9 @@ func (c *connection) composeAcks() bitfield.BitField {
 	c.remoteSequenceLock.Unlock()
 	c.receivedQueueLock.Lock()
 	for _, eachPacket := range c.receivedQueue {
+		if eachPacket == nil {
+			continue
+		}
 		if eachPacket.SequenceInt() == ack || c.sequenceMoreRecent(eachPacket.SequenceInt(), ack, c.maxSeq) {
 			break
 		}
@@ -299,6 +307,10 @@ func (c *connection) RemoteSequenceInt() uint32 {
 
 func (c *connection) LocalSequenceInt() uint32 {
 	return binary.LittleEndian.Uint32(c.localSequence)
+}
+
+func (c *connection) SetLocalSequence(s uint32) {
+	binary.LittleEndian.PutUint32(c.localSequence, s)
 }
 
 func (c *connection) PrintUnacked() {
