@@ -61,8 +61,8 @@ func newConnection(a *net.UDPAddr, s *Socket) *connection {
 	nc.socket = s
 	binary.LittleEndian.PutUint32(nc.localSequence, 0)
 	binary.LittleEndian.PutUint32(nc.remoteSequence, 0)
-	go nc.sendKeepAlive()
-	go nc.detectLostPackets()
+	//go nc.sendKeepAlive()
+	//go nc.detectLostPackets()
 	return &nc
 }
 
@@ -91,7 +91,6 @@ func (c *connection) detectLostPackets() {
 				duration := time.Since(u.created)
 				c.lastHeardLock.Unlock()
 				if duration.Seconds() >= 1 {
-					log.Printf("Time since for packet %d is %s", u.p.SequenceInt(), duration)
 					ne := NewEvent(2, c, u.p)
 					c.unackedPacketsLock.Unlock()
 					c.delUnacked(u.p.SequenceInt())
@@ -138,6 +137,7 @@ func (c *connection) lastHeardSeconds() time.Duration {
 func (c *connection) key() string {
 	var connKey string
 	connKey = fmt.Sprintf("%s:%d", c.addr.IP, c.addr.Port)
+	log.Printf("Key is: %s")
 	return connKey
 }
 

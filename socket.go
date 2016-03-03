@@ -30,7 +30,7 @@ type Socket struct {
 }
 
 // NewSocket creates and returns a new Socket
-func NewSocket(ip string, remote string, port int, bufSize int, pIdentifier []byte, timeOut int) *Socket {
+func NewSocket(ip string, remote string, rPort int, bufSize int, pIdentifier []byte, timeOut int, lPort int) *Socket {
 	log.Printf("Creating new socket")
 	if remote == "" {
 		log.Printf("No remote specified. This will be a listening socket only")
@@ -40,11 +40,11 @@ func NewSocket(ip string, remote string, port int, bufSize int, pIdentifier []by
 		log.Fatal("Invalid string for IP passed to NewSocket")
 	}
 
-	if port == 0 {
-		log.Fatal("Port must be greater than 0")
+	if lPort == 0 {
+		log.Fatal("lPort must be greater than 0")
 	}
 
-	addrString := fmt.Sprintf("%s:%d", ip, port)
+	addrString := fmt.Sprintf("%s:%d", ip, lPort)
 	listenAddr, err := net.ResolveUDPAddr("udp", addrString)
 
 	if err != nil {
@@ -52,6 +52,9 @@ func NewSocket(ip string, remote string, port int, bufSize int, pIdentifier []by
 	}
 
 	listenConn, err := net.ListenUDP("udp", listenAddr)
+	if err != nil {
+		log.Fatalf("Error trying to listen: %s", err.Error())
+	}
 	listenConn.SetReadBuffer(1048576)
 
 	if err != nil {
@@ -62,8 +65,8 @@ func NewSocket(ip string, remote string, port int, bufSize int, pIdentifier []by
 	newSocket.listenAddr = listenAddr
 	newSocket.listenConn = listenConn
 
-	if remote != "" {
-		remoteString := fmt.Sprintf("%s:%d", remote, port)
+	if remote != "" && rPort != 0 {
+		remoteString := fmt.Sprintf("%s:%d", remote, rPort)
 		remoteAddr, err := net.ResolveUDPAddr("udp", remoteString)
 		newSocket.remoteAddr = remoteAddr
 		if err != nil {
@@ -77,7 +80,7 @@ func NewSocket(ip string, remote string, port int, bufSize int, pIdentifier []by
 	newSocket.Events = make(chan *Event, 1024)
 	newSocket.pIdentifier = pIdentifier
 	newSocket.cm = newConnectionManager(&newSocket)
-	newSocket.packetloss = 50
+	newSocket.packetloss = 0
 	timeoutString := fmt.Sprintf("%ds", timeOut)
 	timeout, err := time.ParseDuration(timeoutString)
 	newSocket.timeout = timeout
@@ -86,31 +89,28 @@ func NewSocket(ip string, remote string, port int, bufSize int, pIdentifier []by
 }
 
 func (s *Socket) listen(wg *sync.WaitGroup) {
-
 	defer wg.Done()
-	//log.Printf("Starting to listen for packets on %s", s.listenAddr)
 	buf := make([]byte, s.bufSize)
 	for {
-		//listenCycleCount++
-
-		n, addr, err := s.listenConn.ReadFromUDP(buf)
-
-		//log.Printf("RECV: Processing new packet")
+		_, addr, err := s.listenConn.ReadFromUDP(buf)
+		if err != nil {
+			log.Printf("Error reading from socket: %s", err.Error())
+			continue
+		}
+		//log.Printf("RECV: Processing new packet: %s", addr.String())
 		newPacket := NewPacket(addr, nil)
 		newPacket.sender = addr
-		//log.Printf("RECV: Received packet from: %s", addr)
+
 		// Extract the various fields from the data received
 		copy(newPacket.protocolID, buf[0:4])
-		//newPacket.protocolID = buf[0:4]
 		copy(newPacket.sequence, buf[4:8])
-		//newPacket.sequence = buf[4:8]
 		copy(newPacket.ack, buf[8:12])
-		//newPacket.ack = buf[8:12]
 		newPacket.acks = bitfield.BitField(buf[12:16])
-		copy(newPacket.payload, buf[16:n])
-		//newPacket.payload = buf[16:n]
+		newPacket.payload = make([]byte, len(buf))
+		copy(newPacket.payload, buf[16:])
 		findResult := s.cm.find(addr)
 		if findResult == nil {
+
 			newConn := newConnection(addr, s)
 			s.cm.add(newConn)
 			findResult = newConn
@@ -125,7 +125,7 @@ func (s *Socket) listen(wg *sync.WaitGroup) {
 
 		}
 		findResult.processAck(newPacket.ack, &newPacket.acks)
-		log.Printf("RECV: Ack/s for packet %d are: %d : %s", newPacket.SequenceInt(), newPacket.AckInt(), newPacket.PrintAcks())
+		//log.Printf("RECV: Ack/s for packet %d are: %d : %s", newPacket.SequenceInt(), newPacket.AckInt(), newPacket.PrintAcks())
 
 		newPacket.c = findResult
 		//log.Printf("packet seq is %d and remote sequence is %d", newPacket.SequenceInt(), findResult.RemoteSequenceInt())
@@ -142,8 +142,6 @@ func (s *Socket) listen(wg *sync.WaitGroup) {
 func (s *Socket) send(wg *sync.WaitGroup) {
 	defer wg.Done()
 	for p := range s.Outbound {
-
-		//sendStart := time.Now()
 		//log.Printf("SEND: Sending packet to: %s", p.Sender())
 		c := s.cm.find(p.Sender())
 		if c == nil {
@@ -179,6 +177,7 @@ func (s *Socket) send(wg *sync.WaitGroup) {
 		data = append(data, p.ack...)
 		data = append(data, p.acks...)
 		data = append(data, p.payload...)
+		//		log.Printf("In send data is: %v payload is: %v", data, p.payload)
 		//chance := rand.Float64()
 		//if chance < 0.1 {
 		//	log.Printf("Throwing away packet: %d", p.SequenceInt())
@@ -186,15 +185,15 @@ func (s *Socket) send(wg *sync.WaitGroup) {
 		//}
 		//log.Printf("Sending to %s", p.Sender())
 		//if math.Mod(float64(p.SequenceInt()), 100) == 0 {
-		log.Printf("SEND: Ack/s for packet %d are %d : %s", p.SequenceInt(), p.AckInt(), p.PrintAcks())
+		//log.Printf("SEND: Ack/s for packet %d are %d : %s", p.SequenceInt(), p.AckInt(), p.PrintAcks())
 		//}
 		if s.packetloss > 0 {
 			randChance := rand.Int31n(100)
 			if randChance <= int32(s.packetloss) {
-				log.Printf("Throwing away a packet")
 				continue
 			}
 		}
+
 		_, err := s.listenConn.WriteToUDP(data, p.Sender())
 		if err != nil {
 			log.Printf("Error writing packet: %s", err)
@@ -207,10 +206,8 @@ func (s *Socket) send(wg *sync.WaitGroup) {
 // Start starts the Socket listening and sending
 func (s *Socket) Start(wg *sync.WaitGroup) {
 	go s.listen(wg)
-	if s.remoteAddr != nil {
-		wg.Add(1)
-		go s.send(wg)
-	}
+	wg.Add(1)
+	go s.send(wg)
 }
 
 // SetTimeout lets the user set the timeout for a Socket. If a Connection has
@@ -227,30 +224,6 @@ func (s *Socket) SetProtocolID(pID []byte) bool {
 	return true
 }
 
-/*
-func interfaces() {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		log.Panicf("There was an error getting system interfaces")
-	}
-	for _, i := range ifaces {
-		addrs, err := i.Addrs()
-		if err != nil {
-			log.Panicf("There was an error getting system interface addresses")
-		}
-		for _, addr := range addrs {
-
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip := v.IP
-			case *net.IPAddr:
-				ip := v.IP
-
-			}
-		}
-	}
-}
-*/
 // GetRemoteAddress returns the remote address of the socket
 func (s *Socket) GetRemoteAddress() *net.UDPAddr {
 	return s.remoteAddr
