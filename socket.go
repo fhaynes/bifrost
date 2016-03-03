@@ -262,3 +262,7 @@ func (s *Socket) Stop() {
 	close(s.Outbound)
 	close(s.Inbound)
 }
+
+func (s *Socket) ListenConn() *net.UDPConn {
+	return s.listenConn
+}
