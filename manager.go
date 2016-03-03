@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -22,16 +23,18 @@ func newConnectionManager(s *Socket) *connectionManager {
 	newConnectionManager.reaper = time.NewTicker(time.Second * 5)
 	newConnectionManager.control = make(chan bool, 1)
 	newConnectionManager.connectionsLock = &sync.Mutex{}
-	go newConnectionManager.disconnected()
+	//go newConnectionManager.disconnected()
 	return &newConnectionManager
 }
 
 func (cm *connectionManager) add(c *connection) bool {
 	cm.connectionsLock.Lock()
 	defer cm.connectionsLock.Unlock()
-	_, ok := cm.connections[c.key()]
+	connKey := c.key()
+	log.Printf("Adding new conn: %s %p %d", connKey, c, len(cm.connections))
+	_, ok := cm.connections[connKey]
 	if ok == false {
-		cm.connections[c.key()] = c
+		cm.connections[connKey] = c
 		return true
 	}
 	return false
@@ -72,7 +75,6 @@ func (cm *connectionManager) find(r *net.UDPAddr) *connection {
 	cm.connectionsLock.Lock()
 	defer cm.connectionsLock.Unlock()
 	key := fmt.Sprintf("%s:%d", r.IP, r.Port)
-
 	for k, v := range cm.connections {
 		if key == k {
 			return v
