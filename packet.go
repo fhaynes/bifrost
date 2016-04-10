@@ -40,6 +40,7 @@ func (p *Packet) Sender() *net.UDPAddr {
 	return p.sender
 }
 
+// Sequence ...
 func (p *Packet) Sequence() []byte {
 	p.sequenceLock.Lock()
 	defer p.sequenceLock.Unlock()

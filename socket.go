@@ -6,6 +6,8 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,17 +33,8 @@ type Socket struct {
 
 // NewSocket creates and returns a new Socket
 func NewSocket(ip string, remote string, rPort int, bufSize int, pIdentifier []byte, timeOut int, lPort int) *Socket {
-	log.Printf("Creating new socket")
-	if remote == "" {
-		log.Printf("No remote specified. This will be a listening socket only")
-	}
-
 	if len(ip) <= 0 {
 		log.Fatal("Invalid string for IP passed to NewSocket")
-	}
-
-	if lPort == 0 {
-		log.Fatal("lPort must be greater than 0")
 	}
 
 	addrString := fmt.Sprintf("%s:%d", ip, lPort)
@@ -238,4 +231,15 @@ func (s *Socket) Stop() {
 
 func (s *Socket) ListenConn() *net.UDPConn {
 	return s.listenConn
+}
+
+// ListenPort returns the port the socket is listening on
+func (s *Socket) ListenPort() int {
+	tmp := s.listenConn.LocalAddr()
+	p := strings.Split(tmp.String(), ":")
+	pInt, err := strconv.Atoi(p[1])
+	if err != nil {
+		return 0
+	}
+	return pInt
 }
