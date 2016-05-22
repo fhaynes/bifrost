@@ -9,13 +9,13 @@ import (
 // disconnected or a packet being lost
 type Event struct {
 	eventID int
-	conn    *connection
+	conn    *Connection
 	p       *Packet
 	time    time.Time
 }
 
 // NewEvent creates a new Event struct and returns its address
-func NewEvent(eid int, c *connection, p *Packet) *Event {
+func NewEvent(eid int, c *Connection, p *Packet) *Event {
 	ne := Event{}
 	ne.eventID = eid
 	ne.conn = c
@@ -27,7 +27,7 @@ func NewEvent(eid int, c *connection, p *Packet) *Event {
 func (e *Event) PrintEventMessage() string {
 
 	if e.eventID == 1 {
-		return fmt.Sprintf("%s disconnected", e.conn.addr)
+		return fmt.Sprintf("%s disconnected", e.conn.Addr)
 	} else if e.eventID == 2 {
 		return fmt.Sprintf("Packet %d was lost", e.p.SequenceInt())
 	} else {

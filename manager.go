@@ -2,7 +2,6 @@ package bifrost
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -10,7 +9,7 @@ import (
 
 type connectionManager struct {
 	connectionsLock *sync.Mutex
-	connections     map[string]*connection
+	connections     map[string]*Connection
 	socket          *Socket
 	reaper          *time.Ticker
 	control         chan bool
@@ -18,7 +17,7 @@ type connectionManager struct {
 
 func newConnectionManager(s *Socket) *connectionManager {
 	newConnectionManager := connectionManager{}
-	newConnectionManager.connections = make(map[string]*connection)
+	newConnectionManager.connections = make(map[string]*Connection)
 	newConnectionManager.socket = s
 	newConnectionManager.reaper = time.NewTicker(time.Second * 5)
 	newConnectionManager.control = make(chan bool, 1)
@@ -27,11 +26,10 @@ func newConnectionManager(s *Socket) *connectionManager {
 	return &newConnectionManager
 }
 
-func (cm *connectionManager) add(c *connection) bool {
+func (cm *connectionManager) add(c *Connection) bool {
 	cm.connectionsLock.Lock()
 	defer cm.connectionsLock.Unlock()
 	connKey := c.key()
-	log.Printf("Adding new conn: %s %p %d", connKey, c, len(cm.connections))
 	_, ok := cm.connections[connKey]
 	if ok == false {
 		cm.connections[connKey] = c
@@ -40,7 +38,7 @@ func (cm *connectionManager) add(c *connection) bool {
 	return false
 }
 
-func (cm *connectionManager) remove(c *connection) bool {
+func (cm *connectionManager) remove(c *Connection) bool {
 	cm.connectionsLock.Lock()
 	defer cm.connectionsLock.Unlock()
 	_, ok := cm.connections[c.key()]
@@ -71,7 +69,7 @@ func (cm *connectionManager) disconnected() {
 	}
 }
 
-func (cm *connectionManager) find(r *net.UDPAddr) *connection {
+func (cm *connectionManager) find(r *net.UDPAddr) *Connection {
 	cm.connectionsLock.Lock()
 	defer cm.connectionsLock.Unlock()
 	key := fmt.Sprintf("%s:%d", r.IP, r.Port)

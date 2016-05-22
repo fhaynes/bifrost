@@ -13,11 +13,11 @@ import (
 )
 
 // Connection tracks an individual IP:Port combination
-type connection struct {
+type Connection struct {
 	rtt    float64
 	rttMax float64
 	maxSeq uint32
-	addr   *net.UDPAddr
+	Addr   *net.UDPAddr
 
 	lastHeard      time.Time
 	lastAckProcess time.Time
@@ -29,6 +29,7 @@ type connection struct {
 	unackedPackets []*unackedPacketWrapper
 	ackedPackets   []*Packet
 	receivedQueue  []*Packet
+	OutboundQueue  chan *Packet
 
 	lastSentLock       *sync.Mutex
 	receivedQueueLock  *sync.Mutex
@@ -41,9 +42,9 @@ type connection struct {
 }
 
 // NewConnection creates a new Connection
-func newConnection(a *net.UDPAddr, s *Socket) *connection {
-	nc := connection{}
-	nc.addr = a
+func newConnection(a *net.UDPAddr, s *Socket) *Connection {
+	nc := Connection{}
+	nc.Addr = a
 	nc.rtt = 0.0
 	nc.rttMax = 1.0
 	nc.lastHeard = time.Now()
@@ -52,6 +53,7 @@ func newConnection(a *net.UDPAddr, s *Socket) *connection {
 	nc.remoteSequence = make([]byte, 4)
 	nc.maxSeq = 4294967295
 	nc.unackedPackets = make([]*unackedPacketWrapper, 0, 100)
+	nc.OutboundQueue = make(chan *Packet, 1024)
 	nc.unackedPacketsLock = &sync.Mutex{}
 	nc.receivedQueue = make([]*Packet, 33, 33)
 	nc.receivedQueueLock = &sync.Mutex{}
@@ -62,28 +64,41 @@ func newConnection(a *net.UDPAddr, s *Socket) *connection {
 	binary.LittleEndian.PutUint32(nc.localSequence, 0)
 	binary.LittleEndian.PutUint32(nc.remoteSequence, 0)
 	//go nc.sendKeepAlive()
-	//go nc.detectLostPackets()
+	go nc.processOutbound()
+	go nc.detectLostPackets()
 	return &nc
 }
 
-func (c *connection) sendKeepAlive() {
-	ticker := time.NewTicker(33 * time.Millisecond)
+func (c *Connection) sendKeepAlive() {
+	ticker := time.NewTicker(1000 * time.Millisecond)
 	for _ = range ticker.C {
 		c.lastSentLock.Lock()
 		duration := time.Since(c.lastSent)
 		c.lastSentLock.Unlock()
-		if duration.Seconds() > 0.033 {
-			np := NewPacket(c.addr, []byte("kpal"))
+		if duration.Seconds() > 3 {
+			np := NewPacket(c, []byte("kpal"))
 			c.socket.Outbound <- np
 		}
 	}
 }
 
-func (c *connection) detectLostPackets() {
+func (c *Connection) processOutbound() {
+	ticker := time.NewTicker(time.Millisecond * 33)
+	for _ = range ticker.C {
+		select {
+		case p := <-c.OutboundQueue:
+			c.socket.Outbound <- p
+		default:
+			np := NewPacket(c, []byte("kpal"))
+			c.socket.Outbound <- np
+		}
+	}
+}
+
+func (c *Connection) detectLostPackets() {
 	ticker := time.NewTicker(1 * time.Second)
 
 	for _ = range ticker.C {
-
 		c.unackedPacketsLock.Lock()
 		for _, u := range c.unackedPackets {
 			if u != nil {
@@ -92,56 +107,53 @@ func (c *connection) detectLostPackets() {
 				c.lastHeardLock.Unlock()
 				if duration.Seconds() >= 1 {
 					ne := NewEvent(2, c, u.p)
-					c.unackedPacketsLock.Unlock()
 					c.delUnacked(u.p.SequenceInt())
-					c.unackedPacketsLock.Lock()
+
 					c.socket.Events <- ne
 				}
 			}
 		}
 		c.unackedPacketsLock.Unlock()
-
 	}
 }
 
-func (c *connection) updateLastHeard() {
+func (c *Connection) updateLastHeard() {
 	c.lastHeardLock.Lock()
 	defer c.lastHeardLock.Unlock()
 	c.lastHeard = time.Now()
 }
 
-func (c *connection) updateLastSent() {
+func (c *Connection) updateLastSent() {
 	c.lastSentLock.Lock()
 	defer c.lastSentLock.Unlock()
 	c.lastSent = time.Now()
 }
 
-func (c *connection) incrementLocalSequence() {
+func (c *Connection) incrementLocalSequence() {
 	curSeq := binary.LittleEndian.Uint32(c.localSequence)
 	curSeq++
 	binary.LittleEndian.PutUint32(c.localSequence, curSeq)
 }
 
-func (c *connection) incrementRemoteSequence() {
+func (c *Connection) incrementRemoteSequence() {
 	curSeq := binary.LittleEndian.Uint32(c.remoteSequence)
 	curSeq++
 	binary.LittleEndian.PutUint32(c.remoteSequence, curSeq)
 }
 
-func (c *connection) lastHeardSeconds() time.Duration {
+func (c *Connection) lastHeardSeconds() time.Duration {
 	c.lastHeardLock.Lock()
 	defer c.lastHeardLock.Unlock()
 	return time.Since(c.lastHeard)
 }
 
-func (c *connection) key() string {
+func (c *Connection) key() string {
 	var connKey string
-	connKey = fmt.Sprintf("%s:%d", c.addr.IP, c.addr.Port)
-	log.Printf("Key is: %s")
+	connKey = fmt.Sprintf("%s:%d", c.Addr.IP, c.Addr.Port)
 	return connKey
 }
 
-func (c *connection) addUnacked(p *Packet) {
+func (c *Connection) addUnacked(p *Packet) {
 	nu := newUPW(p)
 
 	c.unackedPacketsLock.Lock()
@@ -151,9 +163,7 @@ func (c *connection) addUnacked(p *Packet) {
 	return
 }
 
-func (c *connection) delUnacked(seq uint32) bool {
-	c.unackedPacketsLock.Lock()
-	defer c.unackedPacketsLock.Unlock()
+func (c *Connection) delUnacked(seq uint32) bool {
 	for i, v := range c.unackedPackets {
 		if v != nil {
 			if v.p.SequenceInt() == seq {
@@ -165,14 +175,14 @@ func (c *connection) delUnacked(seq uint32) bool {
 	return false
 }
 
-func (c *connection) addAcked(p *Packet) {
+func (c *Connection) addAcked(p *Packet) {
 	c.ackedPacketsLock.Lock()
 	defer c.ackedPacketsLock.Unlock()
 	c.ackedPackets = append(c.ackedPackets, p)
 	return
 }
 
-func (c *connection) addReceived(p *Packet) {
+func (c *Connection) addReceived(p *Packet) {
 	c.receivedQueueLock.Lock()
 	defer c.receivedQueueLock.Unlock()
 	rCount := len(c.receivedQueue)
@@ -182,7 +192,7 @@ func (c *connection) addReceived(p *Packet) {
 	c.receivedQueue = append(c.receivedQueue, p)
 }
 
-func (c *connection) delReceived(p *Packet) bool {
+func (c *Connection) delReceived(p *Packet) bool {
 	c.receivedQueueLock.Lock()
 	defer c.receivedQueueLock.Unlock()
 	for i, v := range c.receivedQueue {
@@ -194,13 +204,14 @@ func (c *connection) delReceived(p *Packet) bool {
 	return false
 }
 
-func (c *connection) processAck(bAck []byte, a *bitfield.BitField) {
+func (c *Connection) processAck(bAck []byte, a *bitfield.BitField) {
 	ack := binary.LittleEndian.Uint32(bAck)
 	c.unackedPacketsLock.Lock()
 	defer c.unackedPacketsLock.Unlock()
 	if len(c.unackedPackets) == 0 {
 		return
 	}
+	packetSeqsToRemove := make([]uint32, 0)
 	for _, eachPacket := range c.unackedPackets {
 		acked := false
 		if eachPacket.p.SequenceInt() == ack {
@@ -212,26 +223,26 @@ func (c *connection) processAck(bAck []byte, a *bitfield.BitField) {
 			}
 		}
 		if acked == true {
-			c.addAcked(eachPacket.p)
-			c.unackedPacketsLock.Unlock()
-			c.delUnacked(eachPacket.p.SequenceInt())
-			c.unackedPacketsLock.Lock()
+			packetSeqsToRemove = append(packetSeqsToRemove, eachPacket.p.SequenceInt())
 		}
+	}
+	for _, sequence := range packetSeqsToRemove {
+		c.delUnacked(sequence)
 	}
 }
 
-func (c *connection) sequenceMoreRecent(seq1 uint32, seq2 uint32, maxSeq uint32) bool {
+func (c *Connection) sequenceMoreRecent(seq1 uint32, seq2 uint32, maxSeq uint32) bool {
 	return (seq1 > seq2) && (seq1-seq2 <= maxSeq/2) || (seq2 > seq1) && (seq2-seq1 > maxSeq/2)
 }
 
-func (c *connection) bitIndexForSequence(seq uint32, ack uint32, maxSeq uint32) int {
+func (c *Connection) bitIndexForSequence(seq uint32, ack uint32, maxSeq uint32) int {
 	if seq > ack {
 		return int(ack + (maxSeq - seq))
 	}
 	return int(ack - 1 - seq)
 }
 
-func (c *connection) composeAcks() bitfield.BitField {
+func (c *Connection) composeAcks() bitfield.BitField {
 	acks := bitfield.New(32)
 	c.remoteSequenceLock.Lock()
 	ack := binary.LittleEndian.Uint32(c.remoteSequence)
@@ -253,7 +264,7 @@ func (c *connection) composeAcks() bitfield.BitField {
 	return acks
 }
 
-func (c *connection) CheckSeqInReceived(s uint32) bool {
+func (c *Connection) CheckSeqInReceived(s uint32) bool {
 	c.receivedQueueLock.Lock()
 	defer c.receivedQueueLock.Unlock()
 	for _, v := range c.receivedQueue {
@@ -266,7 +277,7 @@ func (c *connection) CheckSeqInReceived(s uint32) bool {
 	return false
 }
 
-func (c *connection) CheckSeqInUnacked(s uint32) (bool, int) {
+func (c *Connection) CheckSeqInUnacked(s uint32) (bool, int) {
 	c.unackedPacketsLock.Lock()
 	defer c.unackedPacketsLock.Unlock()
 	for i, v := range c.unackedPackets {
@@ -277,20 +288,20 @@ func (c *connection) CheckSeqInUnacked(s uint32) (bool, int) {
 	}
 	return false, 0
 }
-func (c *connection) CountReceivedQueue() int {
+func (c *Connection) CountReceivedQueue() int {
 	c.receivedQueueLock.Lock()
 	defer c.receivedQueueLock.Unlock()
 	return len(c.receivedQueue)
 }
 
-func (c *connection) CountUnacked() int {
+func (c *Connection) CountUnacked() int {
 	c.unackedPacketsLock.Lock()
 	defer c.unackedPacketsLock.Unlock()
 	return len(c.unackedPackets)
 
 }
 
-func (c *connection) PrintReceivedQueue() {
+func (c *Connection) PrintReceivedQueue() {
 	c.receivedQueueLock.Lock()
 	defer c.receivedQueueLock.Unlock()
 	//log.Printf("RQ is:")
@@ -301,19 +312,19 @@ func (c *connection) PrintReceivedQueue() {
 	}
 }
 
-func (c *connection) RemoteSequenceInt() uint32 {
+func (c *Connection) RemoteSequenceInt() uint32 {
 	return binary.LittleEndian.Uint32(c.remoteSequence)
 }
 
-func (c *connection) LocalSequenceInt() uint32 {
+func (c *Connection) LocalSequenceInt() uint32 {
 	return binary.LittleEndian.Uint32(c.localSequence)
 }
 
-func (c *connection) SetLocalSequence(s uint32) {
+func (c *Connection) SetLocalSequence(s uint32) {
 	binary.LittleEndian.PutUint32(c.localSequence, s)
 }
 
-func (c *connection) PrintUnacked() {
+func (c *Connection) PrintUnacked() {
 	//var buf bytes.Buffer
 	c.unackedPacketsLock.Lock()
 	defer c.unackedPacketsLock.Unlock()

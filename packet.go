@@ -19,25 +19,25 @@ type Packet struct {
 	ack          []byte
 	acks         bitfield.BitField
 	payload      []byte
-	c            *connection
+	C            *Connection
 }
 
 // NewPacket initializes a new packet
-func NewPacket(s *net.UDPAddr, p []byte) *Packet {
+func NewPacket(c *Connection, p []byte) *Packet {
 	newPacket := Packet{}
 	newPacket.ack = make([]byte, 4)
 	newPacket.protocolID = make([]byte, 4)
 	newPacket.sequence = make([]byte, 4)
 	newPacket.acks = bitfield.New(32)
-	newPacket.sender = s
 	newPacket.payload = p
 	newPacket.sequenceLock = &sync.Mutex{}
+	newPacket.C = c
 	return &newPacket
 }
 
 // Sender returns the sender of the packet
-func (p *Packet) Sender() *net.UDPAddr {
-	return p.sender
+func (p *Packet) Sender() *Connection {
+	return p.C
 }
 
 // Sequence ...
@@ -67,8 +67,8 @@ func (p *Packet) AckInt() uint32 {
 	return binary.LittleEndian.Uint32(p.ack)
 }
 
-func (p *Packet) Connection() *connection {
-	return p.c
+func (p *Packet) Connection() *Connection {
+	return p.C
 }
 
 func (p *Packet) PrintAcks() *bytes.Buffer {
