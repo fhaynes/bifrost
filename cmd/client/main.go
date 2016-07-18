@@ -236,7 +236,5 @@ func processSocketEvents(s *bifrost.Socket) {
 	log.Printf("Beginning processing of Socket events")
 	for {
 		e := <-s.Events
-		msg := e.PrintEventMessage()
-		log.Printf("Received %s socket event", msg)
 	}
 }

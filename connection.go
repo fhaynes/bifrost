@@ -4,20 +4,23 @@ package bifrost
 import (
 	"encoding/binary"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"time"
 
+	log "github.com/Sirupsen/logrus"
 	"github.com/emef/bitfield"
 )
 
 // Connection tracks an individual IP:Port combination
 type Connection struct {
-	rtt    float64
-	rttMax float64
-	maxSeq uint32
-	Addr   *net.UDPAddr
+	pOutbound          bool
+	pDetectLostPackets bool
+	rtt                float64
+	rttMax             float64
+	maxSeq             uint32
+	disconnectTime     float64
+	Addr               *net.UDPAddr
 
 	lastHeard      time.Time
 	lastAckProcess time.Time
@@ -38,15 +41,18 @@ type Connection struct {
 	remoteSequenceLock *sync.Mutex
 	ackedPacketsLock   *sync.Mutex
 
-	socket *Socket
+	socket  *Socket
+	manager *connectionManager
 }
 
 // NewConnection creates a new Connection
-func newConnection(a *net.UDPAddr, s *Socket) *Connection {
+func newConnection(a *net.UDPAddr, s *Socket, cm *connectionManager) *Connection {
 	nc := Connection{}
 	nc.Addr = a
 	nc.rtt = 0.0
 	nc.rttMax = 1.0
+	nc.manager = cm
+	nc.disconnectTime = 2.0
 	nc.lastHeard = time.Now()
 	nc.lastHeardLock = &sync.Mutex{}
 	nc.localSequence = make([]byte, 4)
@@ -60,12 +66,16 @@ func newConnection(a *net.UDPAddr, s *Socket) *Connection {
 	nc.lastSentLock = &sync.Mutex{}
 	nc.remoteSequenceLock = &sync.Mutex{}
 	nc.ackedPacketsLock = &sync.Mutex{}
+	nc.pOutbound = true
+	nc.pDetectLostPackets = true
 	nc.socket = s
 	binary.LittleEndian.PutUint32(nc.localSequence, 0)
 	binary.LittleEndian.PutUint32(nc.remoteSequence, 0)
 	//go nc.sendKeepAlive()
 	go nc.processOutbound()
 	go nc.detectLostPackets()
+	go nc.detectDisconnect()
+
 	return &nc
 }
 
@@ -85,20 +95,27 @@ func (c *Connection) sendKeepAlive() {
 func (c *Connection) processOutbound() {
 	ticker := time.NewTicker(time.Millisecond * 33)
 	for _ = range ticker.C {
-		select {
-		case p := <-c.OutboundQueue:
-			c.socket.Outbound <- p
-		default:
-			np := NewPacket(c, []byte("kpal"))
-			c.socket.Outbound <- np
+		if c.pOutbound == false {
+			return
+		}
+		if c.socket != nil {
+			select {
+			case p := <-c.OutboundQueue:
+				c.socket.Outbound <- p
+			default:
+				np := NewPacket(c, []byte("kpal"))
+				c.socket.Outbound <- np
+			}
 		}
 	}
 }
 
 func (c *Connection) detectLostPackets() {
 	ticker := time.NewTicker(1 * time.Second)
-
 	for _ = range ticker.C {
+		if c.pDetectLostPackets == false {
+			return
+		}
 		c.unackedPacketsLock.Lock()
 		for _, u := range c.unackedPackets {
 			if u != nil {
@@ -106,14 +123,33 @@ func (c *Connection) detectLostPackets() {
 				duration := time.Since(u.created)
 				c.lastHeardLock.Unlock()
 				if duration.Seconds() >= 1 {
-					ne := NewEvent(2, c, u.p)
+					ne := NewEvent(LostPacket, c, u.p)
 					c.delUnacked(u.p.SequenceInt())
-
-					c.socket.Events <- ne
+					if c.socket != nil {
+						c.socket.Events <- ne
+					}
 				}
 			}
 		}
 		c.unackedPacketsLock.Unlock()
+	}
+}
+
+func (c *Connection) detectDisconnect() {
+	ticker := time.NewTicker(1 * time.Second)
+	for _ = range ticker.C {
+		if c.lastHeardSeconds().Seconds() >= c.disconnectTime {
+			ne := NewEvent(Disconnected, c, nil)
+			c.manager.remove(c)
+			c.pOutbound = false
+			c.pDetectLostPackets = false
+			c.socket.Events <- ne
+			c.socket = nil
+			c.Addr = nil
+			c.manager = nil
+
+			return
+		}
 	}
 }
 

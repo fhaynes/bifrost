@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"log"
 	"math/rand"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	log "github.com/Sirupsen/logrus"
 
 	"github.com/emef/bitfield"
 )
@@ -105,7 +106,7 @@ func (s *Socket) listen(wg *sync.WaitGroup) {
 		copy(newPacket.payload, buf[16:bytesRead])
 		findResult := s.cm.find(addr)
 		if findResult == nil {
-			newConn := newConnection(addr, s)
+			newConn := newConnection(addr, s, s.cm)
 			s.cm.add(newConn)
 			findResult = newConn
 		} else {
@@ -147,7 +148,7 @@ func (s *Socket) send(wg *sync.WaitGroup) {
 		p := <-s.Outbound
 		c := s.cm.find(p.Connection().Addr)
 		if c == nil {
-			newConn := newConnection(p.sender, s)
+			newConn := newConnection(p.sender, s, s.cm)
 			s.cm.add(newConn)
 			c = newConn
 		}
