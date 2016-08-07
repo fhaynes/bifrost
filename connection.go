@@ -2,6 +2,7 @@
 package bifrost
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -75,7 +76,16 @@ func newConnection(a *net.UDPAddr, s *Socket, cm *connectionManager) *Connection
 	go nc.processOutbound()
 	go nc.detectLostPackets()
 	go nc.detectDisconnect()
-
+	log.WithFields(log.Fields{
+		"module":  "bifrost",
+		"address": nc.Addr.String(),
+	}).Debugf("New connection created")
+	ne := NewEvent(Connected, &nc, nil)
+	nc.socket.Events <- ne
+	log.WithFields(log.Fields{
+		"module":  "bifrost",
+		"address": nc.Addr.String(),
+	}).Debugf("New connection event sent")
 	return &nc
 }
 
@@ -98,6 +108,7 @@ func (c *Connection) processOutbound() {
 		if c.pOutbound == false {
 			return
 		}
+
 		if c.socket != nil {
 			select {
 			case p := <-c.OutboundQueue:
@@ -111,8 +122,9 @@ func (c *Connection) processOutbound() {
 }
 
 func (c *Connection) detectLostPackets() {
+	log.Debugf("Beginning lost packet detection for: %s", c.Addr.String())
 	ticker := time.NewTicker(1 * time.Second)
-	for _ = range ticker.C {
+	for range ticker.C {
 		if c.pDetectLostPackets == false {
 			return
 		}
@@ -123,6 +135,10 @@ func (c *Connection) detectLostPackets() {
 				duration := time.Since(u.created)
 				c.lastHeardLock.Unlock()
 				if duration.Seconds() >= 1 {
+					payload := *u.p.Payload()
+					if bytes.Compare(payload[:4], []byte("kpal")) == 0 {
+						continue
+					}
 					ne := NewEvent(LostPacket, c, u.p)
 					c.delUnacked(u.p.SequenceInt())
 					if c.socket != nil {
@@ -136,6 +152,10 @@ func (c *Connection) detectLostPackets() {
 }
 
 func (c *Connection) detectDisconnect() {
+	log.WithFields(log.Fields{
+		"module":  "bifrost",
+		"address": c.Addr.String(),
+	}).Debugf("Starting detectDisconnect")
 	ticker := time.NewTicker(1 * time.Second)
 	for _ = range ticker.C {
 		if c.lastHeardSeconds().Seconds() >= c.disconnectTime {
@@ -147,6 +167,11 @@ func (c *Connection) detectDisconnect() {
 			c.socket = nil
 			c.Addr = nil
 			c.manager = nil
+			log.WithFields(log.Fields{
+				"module":    "bifrost",
+				"address":   c.Addr.String(),
+				"lastheard": c.lastHeardSeconds().Seconds(),
+			}).Debugf("Connection disconnected")
 
 			return
 		}
@@ -191,9 +216,7 @@ func (c *Connection) key() string {
 
 func (c *Connection) addUnacked(p *Packet) {
 	nu := newUPW(p)
-
 	c.unackedPacketsLock.Lock()
-
 	defer c.unackedPacketsLock.Unlock()
 	c.unackedPackets = append(c.unackedPackets, nu)
 	return
@@ -259,10 +282,16 @@ func (c *Connection) processAck(bAck []byte, a *bitfield.BitField) {
 			}
 		}
 		if acked == true {
+			tmp := *eachPacket.p.Payload()
+			if bytes.Compare(tmp[:4], []byte("kpal")) != 0 {
+				ne := NewEvent(PacketReceived, c, eachPacket.p)
+				c.socket.Events <- ne
+			}
 			packetSeqsToRemove = append(packetSeqsToRemove, eachPacket.p.SequenceInt())
 		}
 	}
 	for _, sequence := range packetSeqsToRemove {
+
 		c.delUnacked(sequence)
 	}
 }

@@ -26,3 +26,5 @@ _testmain.go
 cmd/client/client
 cmd/server/server
 .tags*
+.idea
+*.iml

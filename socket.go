@@ -144,6 +144,7 @@ func (s *Socket) listen(wg *sync.WaitGroup) {
 func (s *Socket) send(wg *sync.WaitGroup) {
 	defer wg.Done()
 	ticker := time.NewTicker(time.Millisecond * 4)
+
 	for _ = range ticker.C {
 		p := <-s.Outbound
 		c := s.cm.find(p.Connection().Addr)
@@ -152,7 +153,6 @@ func (s *Socket) send(wg *sync.WaitGroup) {
 			s.cm.add(newConn)
 			c = newConn
 		}
-
 		p.sequenceLock.Lock()
 		copy(p.sequence, c.localSequence)
 		p.sequenceLock.Unlock()
@@ -163,16 +163,13 @@ func (s *Socket) send(wg *sync.WaitGroup) {
 		c.remoteSequenceLock.Unlock()
 
 		c.addUnacked(p)
-
 		p.acks = c.composeAcks()
-
 		if c.LocalSequenceInt() > c.maxSeq {
 			c.SetLocalSequence(uint32(0))
 		}
 		//log.Printf("New packet has seq %d", p.SequenceInt())
 
 		c.updateLastSent()
-
 		//log.Printf("SEND: New packet seq is %d %p", p.SequenceInt(), p.sequence)
 		var data []byte
 		data = append(data, p.protocolID...)
@@ -196,8 +193,8 @@ func (s *Socket) send(wg *sync.WaitGroup) {
 				continue
 			}
 		}
-
 		_, err := s.listenConn.WriteToUDP(data, p.C.Addr)
+
 		if err != nil {
 			log.Printf("Error writing packet: %s", err)
 			continue

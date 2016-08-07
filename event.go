@@ -10,6 +10,10 @@ const (
 	Disconnected = iota
 	// LostPacket this event means that a packet was lost
 	LostPacket = iota
+	// Connected this event means that a new connection was created
+	Connected = iota
+	// PacketReceived this event means that the client received a packet
+	PacketReceived = iota
 )
 
 // Event is a struct that represents a socket-level event, such as a client
@@ -17,6 +21,7 @@ const (
 type Event struct {
 	eventID EventType
 	conn    string
+	connobj *Connection
 	p       *Packet
 	time    time.Time
 }
@@ -26,6 +31,7 @@ func NewEvent(eid EventType, c *Connection, p *Packet) *Event {
 	ne := Event{}
 	ne.eventID = eid
 	ne.conn = c.Addr.String()
+	ne.connobj = c
 	ne.p = p
 	return &ne
 }
@@ -43,4 +49,14 @@ func (e *Event) Type() EventType {
 // Source returns the ip/port that generated the event
 func (e *Event) Source() string {
 	return e.conn
+}
+
+// Connection returns the connection associated with the event
+func (e *Event) Connection() *Connection {
+	return e.connobj
+}
+
+// Packet returns the packet associated with the event
+func (e *Event) Packet() *Packet {
+	return e.p
 }

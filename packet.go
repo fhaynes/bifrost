@@ -47,30 +47,36 @@ func (p *Packet) Sequence() []byte {
 	return p.sequence
 }
 
+// SetSequence sets the sequence number of a packet
 func (p *Packet) SetSequence(s uint32) {
 	p.sequenceLock.Lock()
 	defer p.sequenceLock.Unlock()
 	binary.LittleEndian.PutUint32(p.sequence, s)
 }
 
+// SequenceInt returns the sequence numer as an int
 func (p *Packet) SequenceInt() uint32 {
 	p.sequenceLock.Lock()
 	defer p.sequenceLock.Unlock()
 	return binary.LittleEndian.Uint32(p.sequence)
 }
 
+// Payload returns the payload of the packet
 func (p *Packet) Payload() *[]byte {
 	return &p.payload
 }
 
+// AckInt returns the ack of the packet as an int
 func (p *Packet) AckInt() uint32 {
 	return binary.LittleEndian.Uint32(p.ack)
 }
 
+// Connection returns the connection associated with the packet
 func (p *Packet) Connection() *Connection {
 	return p.C
 }
 
+// PrintAcks prints the acks in a packet
 func (p *Packet) PrintAcks() *bytes.Buffer {
 	var buf bytes.Buffer
 	for i := 0; i < 32; i++ {
@@ -83,6 +89,7 @@ func (p *Packet) PrintAcks() *bytes.Buffer {
 	return &buf
 }
 
+// CheckAck ...
 func (p *Packet) CheckAck(f uint32) bool {
 	return p.acks.Test(f)
 }

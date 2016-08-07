@@ -33,6 +33,7 @@ func (cm *connectionManager) add(c *Connection) bool {
 	_, ok := cm.connections[connKey]
 	if ok == false {
 		cm.connections[connKey] = c
+
 		return true
 	}
 	return false
